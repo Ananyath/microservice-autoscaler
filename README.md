@@ -18,11 +18,11 @@ This project formulates horizontal container scaling as a **Markov Decision Proc
 * **Real-World Telemetry Pipeline:** Streams and filters the top 10 most trafficked microservices across 8 days of the Alibaba v2022 dataset ($5.45\text{M}$ container records aggregated into 1-minute cluster time-series steps).
 * **Leakage-Free Time-Series Engineering:** Enforces a strict chronological split (**Days 1–5** Train, **Day 6** Validation, **Days 7–8** Test), applies cyclical $\sin/\cos$ encodings for time-of-day and day-of-week periodicity, and fits Min-Max normalization exclusively on training data.
 * **Custom Gymnasium Simulation (`MicroserviceAutoScaleEnv`):**
-  * **State Space ($S_t$):** Simulated CPU utilization, memory utilization, normalized active container count, cyclical temporal features, and a $k=5$ sliding window of historical incoming workload (RPS).
+  * **State Space ($S_t$):** Simulated CPU utilization, memory utilization, normalized active and pending (cold-start) container counts, incoming workload velocity/trend (`rps_delta`, `rps_trend`), cyclical temporal features, and a $k=5$ sliding window of historical incoming workload (RPS).
   * **Action Space ($A_t$):** Discrete scaling actions $\{-1 \text{ (terminate)}, 0 \text{ (hold)}, +1 \text{ (provision)}\}$ incorporating realistic **cold-start container boot delays** and non-linear queuing latency.
   * **Composite FinOps Reward ($R_t$):** Balances Service Level Agreement (SLA) protection against infrastructure waste:
     $$R_t = -\alpha \cdot \max\left(0, \frac{L_t - L_{\text{SLA}}}{L_{\text{SLA}}}\right) - \beta \cdot \left(\frac{N_{\text{idle}, t}}{N_{\max}}\right)$$
-* **FinOps Sensitivity & Explainability:** Includes a multi-regime $(\alpha, \beta)$ **Pareto Frontier** sweep, smoothed episode training convergence diagnostics, Q-value state-action decision boundary heatmaps, and an interactive **Streamlit** stress-testing dashboard.
+* **FinOps Sensitivity & Explainability:** Includes validation tuning across $(\text{lr}, \gamma, \text{exploration/entropy})$, 5-seed robustness evaluation against an exact Dynamic Programming (DP) oracle ceiling, a multi-regime $(\alpha, \beta)$ **Pareto Frontier** sweep, smoothed convergence diagnostics, Q-value decision heatmaps, and an interactive **Streamlit** stress-testing dashboard.
 
 ---
 
@@ -39,6 +39,8 @@ microservice-autoscaler/
 │   └── ppo_autoscaler.zip        # Trained Proximal Policy Optimization policy
 ├── results/
 │   ├── benchmark_summary.csv     # Quantitative test set benchmark table
+│   ├── multiseed_summary.csv     # 5-seed mean +/- std & DP oracle ceiling
+│   ├── best_hyperparams.json     # Validation-tuned DQN & PPO hyperparameters
 │   ├── pareto_frontier.csv       # Cost vs. SLA sensitivity sweep data
 │   ├── scaling_comparison.png    # Time-series workload, node allocation & latency
 │   ├── metrics_bar_chart.png     # SLA violations & average active nodes comparison
@@ -62,15 +64,16 @@ microservice-autoscaler/
 
 ## Experimental Results (Unseen Test Set: Days 7–8)
 
-| Scaling Policy | SLA Violations | Avg Latency (ms) | Avg Active Nodes (Cost) | Avg Idle Nodes (Waste) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Static Heuristic (`CPU > 80%`)** | 21 | 123.38 ms | 14.87 | 4.35 |
-| **DQN (Value-Based RL)** | 28 | 151.23 ms | **11.09 (-25.4%)** | **1.35 (-69.0%)** |
-| **PPO (Policy-Gradient RL)** | **21** | **123.28 ms** | 14.98 | 4.46 |
+| Scaling Policy | Total Reward | SLA Violations | Avg Latency (ms) | Avg Active Nodes (Cost) | Avg Idle Nodes (Waste) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Static Heuristic (`CPU > 80%`)** | -112.54 | 21 | 123.38 ms | 14.87 | 4.35 |
+| **DQN (Tuned Value-Based RL)** | **-111.40** | 22 | 141.96 ms | **11.57 (-22.2%)** | **1.06 (-75.7%)** |
+| **PPO (Tuned + VecNorm RL)** | -112.59 | **21** | **123.28 ms** | 14.98 | 4.46 |
+| *DP Theoretical Oracle (Upper Bound)* | *-110.72* | *21* | *145.63 ms* | *11.28* | *0.76* |
 
 ### Key Takeaways
-1. **SLA-First Reliability (PPO):** PPO matches the reactive heuristic's SLA protection (`21` violations) while achieving the lowest overall average response latency (`123.28 ms`).
-2. **Cost-Aggressive FinOps Optimization (DQN):** Unlike the static heuristic—which remains pegged at maximum capacity (`16` containers) long after traffic subsides—DQN dynamically scales back down to `6` nodes during off-peak intervals, cutting average compute allocation by **25.4%** and slashing idle container waste by **69.0%**.
+1. **Near-Optimal FinOps Efficiency (DQN):** With per-day episode sampling, surge augmentation, and workload velocity/trend features, DQN achieves `-111.40` total reward (within `0.68` of the exact DP oracle ceiling `-110.72`), cutting average active containers by **22.2%** and slashing idle node waste by **75.7%**.
+2. **SLA-First Stability (PPO + VecNormalize):** Reward normalization eliminates PPO training collapse across all 5 seeds (`-112.59 ± 0.00`), matching the heuristic's minimal `21` SLA violations (the unavoidable floor during Day 7 bursts where `rps > 0.8885`).
 3. **Configurable Trade-Offs:** Adjusting $(\alpha, \beta)$ shifts the learned policy smoothly along the FinOps Pareto frontier, enabling cloud engineers to dial between strict latency guarantees and aggressive cost reduction.
 
 ---

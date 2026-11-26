@@ -17,8 +17,8 @@ for i, n in enumerate(nodes):
     for j, rps in enumerate(loads):
         cap = n / 16.0
         sim_cpu = np.clip(rps / cap, 0.0, 2.0)
-        # Construct synthetic state vector matching env observation space
-        obs = np.array([sim_cpu, sim_cpu * 0.8, cap, 0.0, 1.0, 0.0, 1.0] + [rps]*5, dtype=np.float32)
+        # Construct synthetic state vector matching env observation space (pending=0, delta=0, trend=0)
+        obs = np.array([sim_cpu, sim_cpu * 0.8, cap, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0] + [rps]*5, dtype=np.float32)
         act, _ = dqn_model.predict(obs, deterministic=True)
         action_grid[i, j] = act - 1  # Map {0,1,2} -> {-1, 0, +1}
 

@@ -1,9 +1,11 @@
+import json
 import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from env import MicroserviceAutoScaleEnv
 
 os.makedirs("results", exist_ok=True)
@@ -13,23 +15,41 @@ os.makedirs("logs/ppo", exist_ok=True)
 train_df = pd.read_csv("data/train.csv")
 test_df = pd.read_csv("data/test.csv")
 
+# Load tuned hyperparameters if available
+dqn_params = {"learning_rate": 1e-3, "gamma": 0.95, "exploration_fraction": 0.25}
+ppo_params = {"learning_rate": 3e-4, "gamma": 0.95, "ent_coef": 0.005}
+if os.path.exists("results/best_hyperparams.json"):
+    with open("results/best_hyperparams.json") as f:
+        best = json.load(f)
+        dqn_params.update(best.get("dqn", {}))
+        ppo_params.update(best.get("ppo", {}))
+
 # ==============================================================================
 # PART A: TRAINING CONVERGENCE DIAGNOSTICS (DQN vs. PPO Learning Curves)
 # ==============================================================================
 print("1/2 Running Convergence Diagnostics (logging episode rewards over 60k steps)...")
 
-dqn_mon_env = Monitor(MicroserviceAutoScaleEnv(train_df), filename="logs/dqn/monitor.csv")
+dqn_mon_env = Monitor(
+    MicroserviceAutoScaleEnv(train_df, sample_by_day=True, traffic_jitter=True),
+    filename="logs/dqn/monitor.csv",
+)
 dqn = DQN(
-    "MlpPolicy", dqn_mon_env, learning_rate=1e-3, buffer_size=10000,
-    learning_starts=200, batch_size=64, gamma=0.95, exploration_fraction=0.3,
-    verbose=0, seed=42
+    "MlpPolicy", dqn_mon_env, learning_rate=dqn_params["learning_rate"], buffer_size=15000,
+    learning_starts=500, batch_size=64, gamma=dqn_params["gamma"],
+    exploration_fraction=dqn_params["exploration_fraction"], exploration_final_eps=0.02,
+    target_update_interval=500, policy_kwargs={"net_arch": [128, 128]}, verbose=0, seed=42
 )
 dqn.learn(total_timesteps=60000)
 
-ppo_mon_env = Monitor(MicroserviceAutoScaleEnv(train_df), filename="logs/ppo/monitor.csv")
+ppo_mon_raw = Monitor(
+    MicroserviceAutoScaleEnv(train_df, sample_by_day=True, traffic_jitter=True),
+    filename="logs/ppo/monitor.csv",
+)
+ppo_vec_env = VecNormalize(DummyVecEnv([lambda: ppo_mon_raw]), norm_obs=False, norm_reward=True, clip_reward=10.0)
 ppo = PPO(
-    "MlpPolicy", ppo_mon_env, learning_rate=3e-4, n_steps=128,
-    batch_size=64, gamma=0.95, verbose=0, seed=42
+    "MlpPolicy", ppo_vec_env, learning_rate=ppo_params["learning_rate"], n_steps=256,
+    batch_size=64, gamma=ppo_params["gamma"], ent_coef=ppo_params["ent_coef"],
+    policy_kwargs={"net_arch": [128, 128]}, verbose=0, seed=42
 )
 ppo.learn(total_timesteps=60000)
 
@@ -70,8 +90,17 @@ regimes = [
 
 pareto_rows = []
 for reg in regimes:
-    env_train = MicroserviceAutoScaleEnv(train_df, alpha=reg["alpha"], beta=reg["beta"])
-    agent = PPO("MlpPolicy", env_train, learning_rate=3e-4, n_steps=128, batch_size=64, gamma=0.95, verbose=0, seed=42)
+    env_train = VecNormalize(
+        DummyVecEnv([lambda r=reg: MicroserviceAutoScaleEnv(train_df, alpha=r["alpha"], beta=r["beta"], sample_by_day=True, traffic_jitter=True)]),
+        norm_obs=False,
+        norm_reward=True,
+        clip_reward=10.0,
+    )
+    agent = PPO(
+        "MlpPolicy", env_train, learning_rate=ppo_params["learning_rate"], n_steps=256,
+        batch_size=64, gamma=ppo_params["gamma"], ent_coef=ppo_params["ent_coef"],
+        policy_kwargs={"net_arch": [128, 128]}, verbose=0, seed=42
+    )
     agent.learn(total_timesteps=40000)
 
     # Evaluate on unseen Test Set (Days 7-8)

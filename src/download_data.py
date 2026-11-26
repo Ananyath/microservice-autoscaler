@@ -35,19 +35,24 @@ if glob.glob("data/MSMetrics/*.csv"):
     existing_chunks, top_10 = process_and_delete_csvs(top_10)
     all_chunks.extend(existing_chunks)
 
+CHUNKS_PER_DAY = int(os.environ.get("CHUNKS_PER_DAY", "1"))
+# Alibaba v2022 splits each day into 48 30-minute files (0..47)
+step = max(1, 48 // CHUNKS_PER_DAY)
+
 for day in range(2, 8):
-    ms_idx = day * 48 + 24
-    ms_url = f"{base_url}/MSMetricsUpdate/MSMetricsUpdate_{ms_idx}.tar.gz"
-    ms_tar = f"data/MSMetrics/MSMetrics_{ms_idx}.tar.gz"
-    
-    print(f"[Day {day+1}/8] Downloading MSMetrics_{ms_idx}.tar.gz...")
-    urllib.request.urlretrieve(ms_url, ms_tar)
-    with tarfile.open(ms_tar, "r:gz") as tar:
-        tar.extractall("data/MSMetrics")
-    os.remove(ms_tar)
-    
-    day_chunks, top_10 = process_and_delete_csvs(top_10)
-    all_chunks.extend(day_chunks)
+    for offset in range(24 % step, 48, step)[:CHUNKS_PER_DAY]:
+        ms_idx = day * 48 + offset
+        ms_url = f"{base_url}/MSMetricsUpdate/MSMetricsUpdate_{ms_idx}.tar.gz"
+        ms_tar = f"data/MSMetrics/MSMetrics_{ms_idx}.tar.gz"
+
+        print(f"[Day {day+1}/8 | Chunk {offset}] Downloading MSMetrics_{ms_idx}.tar.gz...")
+        urllib.request.urlretrieve(ms_url, ms_tar)
+        with tarfile.open(ms_tar, "r:gz") as tar:
+            tar.extractall("data/MSMetrics")
+        os.remove(ms_tar)
+
+        day_chunks, top_10 = process_and_delete_csvs(top_10)
+        all_chunks.extend(day_chunks)
 
 final_df = pd.concat(all_chunks, ignore_index=True)
 final_df.to_csv("data/top10_8days.csv", index=False)

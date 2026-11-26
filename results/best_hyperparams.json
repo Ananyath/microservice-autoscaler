@@ -1,0 +1,12 @@
+{
+  "dqn": {
+    "learning_rate": 0.001,
+    "gamma": 0.99,
+    "exploration_fraction": 0.25
+  },
+  "ppo": {
+    "learning_rate": 0.0003,
+    "gamma": 0.95,
+    "ent_coef": 0.005
+  }
+}

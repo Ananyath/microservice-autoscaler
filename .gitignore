@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+logs/
+data/MSMetrics/
+data/top10_8days.csv
+.DS_Store

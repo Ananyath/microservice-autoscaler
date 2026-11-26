@@ -3,14 +3,17 @@ from gymnasium import spaces
 import numpy as np
 import pandas as pd
 
+
 class MicroserviceAutoScaleEnv(gym.Env):
     """
     Custom Gymnasium Environment for Microservice Auto-Scaling.
     Matches MDP formulation:
-      - State Space (S): CPU util, Memory util, active nodes, cyclical time features, and last k RPS values.
+      - State Space (S): CPU util, Memory util, active/pending nodes, cyclical time features,
+        workload velocity/trend, and last k RPS values.
       - Action Space (A_t): Discrete {0: -1 terminate node, 1: 0 maintain, 2: +1 provision node}.
       - Reward (R_t): -alpha * (Latency Penalty) - beta * (Idle Node Cost Penalty).
     """
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -21,9 +24,12 @@ class MicroserviceAutoScaleEnv(gym.Env):
         alpha: float = 4.0,
         beta: float = 0.15,
         cold_start_steps: int = 1,
+        sample_by_day: bool = False,
+        traffic_jitter: bool = False,
     ):
         super().__init__()
-        self.data = data.reset_index(drop=True)
+        self.raw_data = data.reset_index(drop=True)
+        self.data = self.raw_data
         self.k_history = k_history
         self.min_nodes = min_nodes
         self.max_nodes = max_nodes
@@ -31,15 +37,34 @@ class MicroserviceAutoScaleEnv(gym.Env):
         self.alpha = alpha
         self.beta = beta
         self.cold_start_steps = cold_start_steps
+        self.sample_by_day = sample_by_day
+        self.traffic_jitter = traffic_jitter
+
+        self.day_slices = []
+        if self.sample_by_day and "day" in self.raw_data.columns:
+            for _, grp in self.raw_data.groupby("day", sort=True):
+                if len(grp) > self.k_history + 1:
+                    self.day_slices.append(grp.reset_index(drop=True))
 
         self.action_space = spaces.Discrete(3)
-        obs_dim = 7 + self.k_history
+        obs_dim = 10 + self.k_history
         self.observation_space = spaces.Box(
-            low=-1.0, high=2.5, shape=(obs_dim,), dtype=np.float32
+            low=-2.5, high=3.0, shape=(obs_dim,), dtype=np.float32
         )
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        if self.day_slices:
+            idx = int(self.np_random.integers(0, len(self.day_slices)))
+            ep_df = self.day_slices[idx].copy()
+        else:
+            ep_df = self.raw_data.copy()
+
+        if self.traffic_jitter:
+            scale = float(self.np_random.uniform(0.85, 1.30))
+            ep_df["rps"] = ep_df["rps"] * scale
+
+        self.data = ep_df
         self.current_step = self.k_history
         self.active_nodes = 6
         self.pending_nodes = []
@@ -55,12 +80,19 @@ class MicroserviceAutoScaleEnv(gym.Env):
         sim_cpu = np.clip(row["rps"] / (capacity_ratio + 1e-5), 0.0, 2.0)
         sim_mem = np.clip(row["mem_util"] / (capacity_ratio + 1e-5), 0.0, 2.0)
         nodes_norm = capacity_ratio
+        pending_norm = len(self.pending_nodes) / self.max_nodes
+
+        rps_delta = float(row["rps"] - hist_rps[-1])
+        rps_trend = float(row["rps"] - hist_rps[0])
 
         obs = np.concatenate([
             np.array([
                 sim_cpu,
                 sim_mem,
                 nodes_norm,
+                pending_norm,
+                rps_delta,
+                rps_trend,
                 row["tod_sin"],
                 row["tod_cos"],
                 row["dow_sin"],
@@ -107,14 +139,16 @@ class MicroserviceAutoScaleEnv(gym.Env):
         reward = -(self.alpha * latency_penalty) - (self.beta * cost_penalty)
 
         self.current_step += 1
-        terminated = self.current_step >= len(self.data) - 1
-        truncated = False
+        # End of finite trace is a time-limit truncation, not a terminal failure state
+        terminated = False
+        truncated = self.current_step >= len(self.data) - 1
 
         info = {
             "step": self.current_step,
             "rps": float(row["rps"]),
             "cpu_util": float(utilization),
             "active_nodes": int(self.active_nodes),
+            "pending_nodes": int(len(self.pending_nodes)),
             "latency_ms": float(sim_latency_ms),
             "sla_violated": int(sim_latency_ms > self.sla_threshold_ms),
             "idle_nodes": int(idle_nodes),
